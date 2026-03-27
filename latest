@@ -4,6 +4,7 @@ import random
 import threading
 import json
 import os
+import subprocess
 from time import strftime
 from RPLCD.i2c import CharLCD
 
@@ -22,10 +23,14 @@ last_line1 = None
 last_line2 = None
 
 # ------------------------
-# Alarm storage
+# Alarm + audio storage
 # ------------------------
-ALARMS_FILE = "/home/kian/alarm_web/alarms.json"
+BASE_DIR = "/home/kian/alarm_web"
+ALARMS_FILE = os.path.join(BASE_DIR, "alarms.json")
+UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")
+
 last_triggered_stamp = None
+audio_process = None
 
 # ------------------------
 # Button pins
@@ -60,10 +65,46 @@ buzzer_pwm = GPIO.PWM(BUZZER, 200)
 # ------------------------
 # Notes
 # ------------------------
-C3=131; CS3=139; D3=147; DS3=156; E3=165; F3=175; FS3=185; G3=196; GS3=208; A3=220; AS3=233; B3=247
-C4=262; CS4=277; D4=294; DS4=311; E4=330; F4=349; FS4=370; G4=392; GS4=415; A4=440; AS4=466; B4=494
-C5=523; CS5=554; D5=587; DS5=622; E5=659; F5=698; FS5=740; G5=784; GS5=831; A5=880; AS5=932; B5=988
-C6=1047
+C3 = 131
+CS3 = 139
+D3 = 147
+DS3 = 156
+E3 = 165
+F3 = 175
+FS3 = 185
+G3 = 196
+GS3 = 208
+A3 = 220
+AS3 = 233
+B3 = 247
+
+C4 = 262
+CS4 = 277
+D4 = 294
+DS4 = 311
+E4 = 330
+F4 = 349
+FS4 = 370
+G4 = 392
+GS4 = 415
+A4 = 440
+AS4 = 466
+B4 = 494
+
+C5 = 523
+CS5 = 554
+D5 = 587
+DS5 = 622
+E5 = 659
+F5 = 698
+FS5 = 740
+G5 = 784
+GS5 = 831
+A5 = 880
+AS5 = 932
+B5 = 988
+
+C6 = 1047
 
 tune = [
     C4, E4, G4, C5, E5, G4, C5, E5,
@@ -100,14 +141,36 @@ stop_music = threading.Event()
 
 
 def load_alarms():
+    """
+    Supports both:
+    old format: ["07:30", "08:15"]
+    new format: [{"time": "07:30", "song": "abc.mp3"}, ...]
+    """
     try:
         if not os.path.exists(ALARMS_FILE):
             return []
+
         with open(ALARMS_FILE, "r") as f:
             data = json.load(f)
-            if isinstance(data, list):
-                return data
+
+        if not isinstance(data, list):
             return []
+
+        normalized = []
+        for item in data:
+            if isinstance(item, str):
+                normalized.append({
+                    "time": item,
+                    "song": None
+                })
+            elif isinstance(item, dict) and "time" in item:
+                normalized.append({
+                    "time": item["time"],
+                    "song": item.get("song")
+                })
+
+        return normalized
+
     except Exception as e:
         print(f"Could not load alarms: {e}")
         return []
@@ -260,6 +323,69 @@ def music_loop():
             play_note(note, NOTE_DURATION)
 
 
+def stop_audio_file():
+    global audio_process
+
+    if audio_process is not None:
+        try:
+            audio_process.terminate()
+            audio_process.wait(timeout=2)
+        except Exception:
+            pass
+        audio_process = None
+
+
+def start_audio_file(song_filename):
+    """
+    Returns True if custom audio playback started successfully.
+    Returns False if it should fall back to buzzer music.
+    """
+    global audio_process
+
+    stop_audio_file()
+
+    if not song_filename:
+        return False
+
+    song_path = os.path.join(UPLOAD_FOLDER, song_filename)
+
+    if not os.path.exists(song_path):
+        print(f"Song file not found: {song_path}")
+        return False
+
+    ext = os.path.splitext(song_path)[1].lower()
+
+    try:
+        if ext == ".mp3":
+            audio_process = subprocess.Popen(
+                ["mpg123", "--loop", "-1", song_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+        elif ext == ".wav":
+            audio_process = subprocess.Popen(
+                ["bash", "-c", f'while true; do aplay "{song_path}"; done'],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+        elif ext == ".ogg":
+            audio_process = subprocess.Popen(
+                ["ffplay", "-nodisp", "-autoexit", "-loop", "0", song_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+        else:
+            print(f"Unsupported audio extension: {ext}")
+            return False
+
+        print(f"Started custom audio: {song_path}")
+        return True
+
+    except Exception as e:
+        print(f"Failed to play audio file: {e}")
+        return False
+
+
 def generate_math_problem():
     while True:
         op = random.choice(["+", "-", "*"])
@@ -334,12 +460,17 @@ def ask_math_question():
         time.sleep(0.8)
 
 
-def run_alarm_challenge():
+def run_alarm_challenge(song_filename=None):
     print("Starting alarm challenge.")
 
-    stop_music.clear()
-    music_thread = threading.Thread(target=music_loop, daemon=True)
-    music_thread.start()
+    using_custom_audio = start_audio_file(song_filename)
+
+    music_thread = None
+    if not using_custom_audio:
+        print("Using buzzer fallback.")
+        stop_music.clear()
+        music_thread = threading.Thread(target=music_loop, daemon=True)
+        music_thread.start()
 
     pattern = generate_pattern(PATTERN_LENGTH)
 
@@ -359,8 +490,11 @@ def run_alarm_challenge():
 
     ask_math_question()
 
-    stop_music.set()
-    time.sleep(0.1)
+    if using_custom_audio:
+        stop_audio_file()
+    else:
+        stop_music.set()
+        time.sleep(0.1)
 
     lcd_show_temp("Alarm solved!", "Good morning", 2.0)
     print("Alarm challenge complete.")
@@ -377,10 +511,16 @@ try:
         current_time = strftime('%H:%M')
         current_stamp = strftime('%Y-%m-%d %H:%M')
 
-        if current_time in alarms and current_stamp != last_triggered_stamp:
+        matching_alarm = next(
+            (alarm for alarm in alarms if alarm.get("time") == current_time),
+            None
+        )
+
+        if matching_alarm and current_stamp != last_triggered_stamp:
             print(f"Alarm triggered at {current_time}")
+            print(f"Alarm data: {matching_alarm}")
             last_triggered_stamp = current_stamp
-            run_alarm_challenge()
+            run_alarm_challenge(matching_alarm.get("song"))
 
         time.sleep(1)
 
@@ -392,12 +532,13 @@ finally:
 
     stop_music.set()
     stop_clock.set()
+    stop_audio_file()
     time.sleep(0.1)
 
     try:
         buzzer_pwm.stop()
         del buzzer_pwm
-    except:
+    except Exception:
         pass
 
     all_leds_off()
