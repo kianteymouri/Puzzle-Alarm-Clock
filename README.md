@@ -29,12 +29,21 @@ We designed and assembled the packaging, which is a 3D printed case and user som
 BOM below
 
 1x Raspberry Pi 3 Model B ~ 25$
+
 3x LEDs (red, yellow, and green) ~ 50center
+
 3x buttons (red, yellow and green) ~ 4$ (for package of 15)
+
 1x LCD screen ~ 5$
+
 1x RTC clock AdiFruit ~ 6$
+
 1x Buzzer/Speaker
+
 1x Buffer OpAmp
+
 1x 3.7V LiPo Battery
+
 1x Buck Boost Converter 5V 
+
 
