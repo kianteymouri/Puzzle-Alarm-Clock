@@ -1,0 +1,397 @@
+import RPi.GPIO as GPIO
+import time
+import random
+import threading
+from time import strftime
+from RPLCD.i2c import CharLCD
+
+GPIO.setmode(GPIO.BCM)
+
+# ------------------------
+# LCD setup
+# ------------------------
+lcd = CharLCD('PCF8574', 0x27)
+
+lcd_lock = threading.Lock()
+stop_clock = threading.Event()
+message_override = threading.Event()
+
+last_line1 = None
+last_line2 = None
+
+# ------------------------
+# Button pins
+# ------------------------
+GREEN_BTN = 17
+YELLOW_BTN = 27
+RED_BTN = 22
+
+GPIO.setup(GREEN_BTN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+GPIO.setup(YELLOW_BTN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+GPIO.setup(RED_BTN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+# ------------------------
+# LED pins
+# ------------------------
+RED_LED = 23
+YELLOW_LED = 24
+GREEN_LED = 25
+
+GPIO.setup(RED_LED, GPIO.OUT)
+GPIO.setup(YELLOW_LED, GPIO.OUT)
+GPIO.setup(GREEN_LED, GPIO.OUT)
+
+# ------------------------
+# Buzzer pin
+# ------------------------
+BUZZER = 26
+GPIO.setup(BUZZER, GPIO.OUT)
+
+buzzer_pwm = GPIO.PWM(BUZZER, 200)
+
+# ------------------------
+# Notes
+# ------------------------
+C3=131; CS3=139; D3=147; DS3=156; E3=165; F3=175; FS3=185; G3=196; GS3=208; A3=220; AS3=233; B3=247
+C4=262; CS4=277; D4=294; DS4=311; E4=330; F4=349; FS4=370; G4=392; GS4=415; A4=440; AS4=466; B4=494
+C5=523; CS5=554; D5=587; DS5=622; E5=659; F5=698; FS5=740; G5=784; GS5=831; A5=880; AS5=932; B5=988
+C6=1047
+
+tune = [
+    C4, E4, G4, C5, E5, G4, C5, E5,
+    C4, E4, G4, C5, E5, G4, C5, E5,
+    C4, D4, G4, D5, F5, G4, D5, F5,
+    C4, D4, G4, D5, F5, G4, D5, F5,
+    B3, D4, G4, D5, F5, G4, D5, F5,
+    C4, E4, G4, C5, E5, G4, C5, E5
+]
+
+NOTE_DURATION = 0.18
+NOTE_GAP = 0.03
+
+# ------------------------
+# Pattern settings
+# ------------------------
+PATTERN_LENGTH = 5
+FLASH_ON_TIME = 0.5
+FLASH_OFF_TIME = 0.25
+DEBOUNCE_TIME = 0.2
+
+LED_PINS = {
+    "red": RED_LED,
+    "yellow": YELLOW_LED,
+    "green": GREEN_LED
+}
+
+COLORS = ["red", "yellow", "green"]
+
+# ------------------------
+# Thread control
+# ------------------------
+stop_music = threading.Event()
+
+
+def lcd_show(line1="", line2="", force=False):
+    global last_line1, last_line2
+
+    line1 = line1[:16].ljust(16)
+    line2 = line2[:16].ljust(16)
+
+    with lcd_lock:
+        if force or line1 != last_line1:
+            lcd.cursor_pos = (0, 0)
+            lcd.write_string(line1)
+            last_line1 = line1
+
+        if force or line2 != last_line2:
+            lcd.cursor_pos = (1, 0)
+            lcd.write_string(line2)
+            last_line2 = line2
+
+
+def lcd_show_temp(line1="", line2="", duration=1.5):
+    global last_line1, last_line2
+
+    message_override.set()
+
+    with lcd_lock:
+        lcd.clear()
+        last_line1 = None
+        last_line2 = None
+
+    lcd_show(line1, line2, force=True)
+    time.sleep(duration)
+    message_override.clear()
+
+
+def clock_loop():
+    last_time_str = None
+    last_date_str = None
+
+    while not stop_clock.is_set():
+        if not message_override.is_set():
+            now_date = strftime('%m/%d/%Y')
+            now_time = strftime('%I:%M %p')
+
+            if now_date != last_date_str or now_time != last_time_str:
+                lcd_show(now_date, now_time)
+                last_date_str = now_date
+                last_time_str = now_time
+
+        time.sleep(0.2)
+
+
+def all_leds_off():
+    GPIO.output(RED_LED, GPIO.LOW)
+    GPIO.output(YELLOW_LED, GPIO.LOW)
+    GPIO.output(GREEN_LED, GPIO.LOW)
+
+
+def flash_led(color, on_time=FLASH_ON_TIME, off_time=FLASH_OFF_TIME):
+    all_leds_off()
+    GPIO.output(LED_PINS[color], GPIO.HIGH)
+    time.sleep(on_time)
+    GPIO.output(LED_PINS[color], GPIO.LOW)
+    time.sleep(off_time)
+
+
+def flash_all_leds(times=3, on_time=0.3, off_time=0.3):
+    for _ in range(times):
+        GPIO.output(RED_LED, GPIO.HIGH)
+        GPIO.output(YELLOW_LED, GPIO.HIGH)
+        GPIO.output(GREEN_LED, GPIO.HIGH)
+        time.sleep(on_time)
+
+        all_leds_off()
+        time.sleep(off_time)
+
+
+def generate_pattern(length):
+    return [random.choice(COLORS) for _ in range(length)]
+
+
+def show_pattern(pattern):
+    print("\nWatch the pattern:")
+    lcd_show_temp("Watch pattern", "", 1.0)
+    time.sleep(0.5)
+
+    for color in pattern:
+        flash_led(color)
+
+    print("Now repeat the pattern by pressing the buttons.")
+    lcd_show_temp("Repeat pattern", "", 1.0)
+
+
+def wait_for_button_press():
+    while True:
+        if GPIO.input(RED_BTN) == GPIO.LOW:
+            while GPIO.input(RED_BTN) == GPIO.LOW:
+                time.sleep(0.01)
+            time.sleep(DEBOUNCE_TIME)
+            return "red"
+
+        if GPIO.input(YELLOW_BTN) == GPIO.LOW:
+            while GPIO.input(YELLOW_BTN) == GPIO.LOW:
+                time.sleep(0.01)
+            time.sleep(DEBOUNCE_TIME)
+            return "yellow"
+
+        if GPIO.input(GREEN_BTN) == GPIO.LOW:
+            while GPIO.input(GREEN_BTN) == GPIO.LOW:
+                time.sleep(0.01)
+            time.sleep(DEBOUNCE_TIME)
+            return "green"
+
+        time.sleep(0.01)
+
+
+def get_user_pattern(length):
+    entered = []
+    print("Enter the pattern:")
+    lcd_show_temp("Enter pattern", "", 1.0)
+
+    for i in range(length):
+        pressed = wait_for_button_press()
+        entered.append(pressed)
+        print(f"Button {i + 1}: {pressed}")
+
+        GPIO.output(LED_PINS[pressed], GPIO.HIGH)
+        time.sleep(0.15)
+        GPIO.output(LED_PINS[pressed], GPIO.LOW)
+
+    return entered
+
+
+def play_note(freq, duration):
+    buzzer_pwm.ChangeFrequency(freq)
+    buzzer_pwm.start(50)
+    time.sleep(duration)
+    buzzer_pwm.stop()
+    time.sleep(NOTE_GAP)
+
+
+def music_loop():
+    while not stop_music.is_set():
+        for note in tune:
+            if stop_music.is_set():
+                break
+            play_note(note, NOTE_DURATION)
+
+
+def generate_math_problem():
+    """
+    Generates a simple +, -, or * problem with answer in range 0-99.
+    """
+    while True:
+        op = random.choice(["+", "-", "*"])
+
+        if op == "+":
+            a = random.randint(0, 50)
+            b = random.randint(0, 49)
+            ans = a + b
+
+        elif op == "-":
+            a = random.randint(0, 99)
+            b = random.randint(0, a)   # ensures nonnegative answer
+            ans = a - b
+
+        else:  # multiplication
+            a = random.randint(0, 9)
+            b = random.randint(0, 9)
+            ans = a * b
+
+        if 0 <= ans <= 99:
+            return a, op, b, ans
+
+
+def blink_selected_digit(color_name):
+    GPIO.output(LED_PINS[color_name], GPIO.HIGH)
+    time.sleep(0.12)
+    GPIO.output(LED_PINS[color_name], GPIO.LOW)
+
+
+def choose_digit(place_name):
+    """
+    Select one digit 0-9.
+    red button = increase
+    yellow button = decrease
+    green button = confirm
+    """
+    digit = 0
+
+    while True:
+        lcd_show(place_name, f"Digit: {digit}", force=True)
+        pressed = wait_for_button_press()
+
+        if pressed == "red":
+            digit = (digit + 1) % 10
+            blink_selected_digit("red")
+
+        elif pressed == "yellow":
+            digit = (digit - 1) % 10
+            blink_selected_digit("yellow")
+
+        elif pressed == "green":
+            blink_selected_digit("green")
+            time.sleep(0.2)
+            return digit
+
+
+def ask_math_question():
+    """
+    Keeps asking math questions until user gets one correct.
+    Returns True when solved.
+    """
+    a, op, b, answer = generate_math_problem()
+
+    while True:
+        question = f"{a}{op}{b}=?"
+        print(f"Math question: {question}  Answer: {answer}")
+
+        lcd_show_temp("Solve this:", question, 2.0)
+
+        tens = choose_digit("Select tens")
+        ones = choose_digit("Select ones")
+        user_answer = tens * 10 + ones
+
+        print(f"User entered: {user_answer}")
+
+        lcd_show_temp("Your answer:", str(user_answer), 1.2)
+
+        if user_answer == answer:
+            print("Math correct!")
+            lcd_show_temp("Math correct!", "Nice job", 2.0)
+            return True
+
+        print("Math incorrect, try again.")
+        lcd_show_temp("Incorrect", "Try again", 2.0)
+        flash_all_leds(times=3)
+        time.sleep(0.8)
+
+
+try:
+    clock_thread = threading.Thread(target=clock_loop, daemon=True)
+    clock_thread.start()
+
+    music_thread = threading.Thread(target=music_loop, daemon=True)
+    music_thread.start()
+
+    # ------------------------
+    # Part 1: LED pattern game
+    # ------------------------
+    pattern = generate_pattern(PATTERN_LENGTH)
+
+    while True:
+        show_pattern(pattern)
+        user_pattern = get_user_pattern(PATTERN_LENGTH)
+
+        if user_pattern == pattern:
+            print("\nLED pattern correct!")
+            lcd_show_temp("Pattern correct", "", 1.8)
+            break
+        else:
+            print("\nIncorrect pattern, try again.")
+            lcd_show_temp("Incorrect", "Try pattern", 2.0)
+            flash_all_leds(times=3)
+            time.sleep(1)
+
+    # ------------------------
+    # Part 2: Math game
+    # ------------------------
+    ask_math_question()
+
+    # ------------------------
+    # Finished: stop buzzer, keep clock
+    # ------------------------
+    stop_music.set()
+    time.sleep(0.1)
+
+    lcd_show_temp("All correct!", "Good job", 2.0)
+    print("Game complete. LCD will continue showing the time.")
+
+    while True:
+        time.sleep(1)
+
+except KeyboardInterrupt:
+    print("\nUser stopped program.")
+
+finally:
+    print("\nShutting down cleanly...")
+
+    stop_music.set()
+    stop_clock.set()
+    time.sleep(0.1)
+
+    try:
+        buzzer_pwm.stop()
+        del buzzer_pwm
+    except:
+        pass
+
+    all_leds_off()
+    GPIO.output(BUZZER, GPIO.LOW)
+
+    with lcd_lock:
+        lcd.clear()
+
+    GPIO.cleanup()
