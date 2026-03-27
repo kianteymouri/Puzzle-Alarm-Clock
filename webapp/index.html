@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Raspberry Pi Alarm Manager</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 600px;
+      margin: 40px auto;
+      padding: 0 16px;
+      background: #f7f7f7;
+    }
+
+    .card {
+      background: white;
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+    }
+
+    h1 {
+      margin-top: 0;
+    }
+
+    .row {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 20px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    input[type="time"] {
+      font-size: 1rem;
+      padding: 8px;
+    }
+
+    button {
+      padding: 10px 14px;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 1rem;
+    }
+
+    .add-btn {
+      background: #2d89ef;
+      color: white;
+    }
+
+    .delete-btn {
+      background: #d9534f;
+      color: white;
+    }
+
+    ul {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+
+    li {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px;
+      border-bottom: 1px solid #eee;
+    }
+
+    .alarm-time {
+      font-size: 1.2rem;
+      font-weight: bold;
+    }
+
+    .msg {
+      margin-top: 12px;
+      color: #444;
+      min-height: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Alarm Manager</h1>
+
+    <div class="row">
+      <input type="time" id="alarmTime" />
+      <button class="add-btn" onclick="addAlarm()">Add Alarm</button>
+    </div>
+
+    <ul id="alarmList"></ul>
+    <div class="msg" id="message"></div>
+  </div>
+
+  <script>
+    async function loadAlarms() {
+      const res = await fetch('/api/alarms');
+      const data = await res.json();
+      renderAlarms(data.alarms || []);
+    }
+
+    function renderAlarms(alarms) {
+      const list = document.getElementById('alarmList');
+      list.innerHTML = '';
+
+      if (alarms.length === 0) {
+        list.innerHTML = '<li>No alarms set yet.</li>';
+        return;
+      }
+
+      alarms.forEach(alarm => {
+        const li = document.createElement('li');
+
+        const span = document.createElement('span');
+        span.className = 'alarm-time';
+        span.textContent = alarm;
+
+        const btn = document.createElement('button');
+        btn.className = 'delete-btn';
+        btn.textContent = 'Delete';
+        btn.onclick = () => deleteAlarm(alarm);
+
+        li.appendChild(span);
+        li.appendChild(btn);
+        list.appendChild(li);
+      });
+    }
+
+    async function addAlarm() {
+      const input = document.getElementById('alarmTime');
+      const msg = document.getElementById('message');
+
+      if (!input.value) {
+        msg.textContent = 'Please choose a time first.';
+        return;
+      }
+
+      const res = await fetch('/api/alarms', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ time: input.value })
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        msg.textContent = data.error || 'Failed to add alarm.';
+        return;
+      }
+
+      msg.textContent = `Added alarm ${input.value}`;
+      input.value = '';
+      renderAlarms(data.alarms || []);
+    }
+
+    async function deleteAlarm(alarm) {
+      const msg = document.getElementById('message');
+
+      const encoded = encodeURIComponent(alarm);
+      const res = await fetch(`/api/alarms/${encoded}`, {
+        method: 'DELETE'
+      });
+
+      const data = await res.json();
+      msg.textContent = `Deleted alarm ${alarm}`;
+      renderAlarms(data.alarms || []);
+    }
+
+    loadAlarms();
+  </script>
+</body>
+</html>
