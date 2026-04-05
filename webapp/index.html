@@ -1,397 +1,53 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Raspberry Pi Alarm Manager</title>
-  <style>
-    body {
-      font-family: Arial, sans-serif;
-      max-width: 800px;
-      margin: 40px auto;
-      padding: 0 16px;
-      background: #f7f7f7;
-      color: #222;
-    }
-
-    .card {
-      background: white;
-      border-radius: 12px;
-      padding: 20px;
-      box-shadow: 0 2px 10px rgba(0,0,0,0.08);
-      margin-bottom: 20px;
-    }
-
-    h1, h2 {
-      margin-top: 0;
-    }
-
-    .row {
-      display: flex;
-      gap: 10px;
-      margin-bottom: 20px;
-      align-items: center;
-      flex-wrap: wrap;
-    }
-
-    input[type="time"],
-    select,
-    input[type="file"],
-    input[type="number"] {
-      font-size: 1rem;
-      padding: 8px;
-      border: 1px solid #ccc;
-      border-radius: 8px;
-      background: white;
-    }
-
-    button {
-      padding: 10px 14px;
-      border: none;
-      border-radius: 8px;
-      cursor: pointer;
-      font-size: 1rem;
-    }
-
-    .add-btn {
-      background: #2d89ef;
-      color: white;
-    }
-
-    .delete-btn {
-      background: #d9534f;
-      color: white;
-    }
-
-    .upload-btn {
-      background: #5cb85c;
-      color: white;
-    }
-
-    .secondary-btn {
-      background: #777;
-      color: white;
-    }
-
-    ul {
-      list-style: none;
-      padding: 0;
-      margin: 0;
-    }
-
-    li {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 12px;
-      padding: 12px;
-      border-bottom: 1px solid #eee;
-      flex-wrap: wrap;
-    }
-
-    .alarm-left {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-    }
-
-    .alarm-time {
-      font-size: 1.2rem;
-      font-weight: bold;
-    }
-
-    .alarm-song {
-      color: #666;
-      font-size: 0.95rem;
-    }
-
-    .msg {
-      margin-top: 12px;
-      color: #444;
-      min-height: 20px;
-    }
-
-    .status-box {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 14px;
-      font-size: 0.98rem;
-    }
-
-    .status-item {
-      background: #f2f2f2;
-      padding: 10px 12px;
-      border-radius: 8px;
-    }
-
-    .small-label {
-      font-size: 0.9rem;
-      color: #555;
-      margin-bottom: 6px;
-      display: block;
-    }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h1>Alarm Manager</h1>
-
-    <div class="row">
-      <input type="time" id="alarmTime" />
-      <select id="songSelect">
-        <option value="">No custom song</option>
-      </select>
-      <button class="add-btn" onclick="addAlarm()">Add Alarm</button>
-    </div>
-
-    <ul id="alarmList"></ul>
-    <div class="msg" id="message"></div>
-  </div>
-
-  <div class="card">
-    <h2>Upload Song</h2>
-    <div class="row">
-      <input type="file" id="songFile" accept=".mp3,.wav,.ogg" />
-      <button class="upload-btn" onclick="uploadSong()">Upload</button>
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>Set Outside Temperature</h2>
-    <div class="row">
-      <input type="number" id="tempInput" placeholder="68" />
-      <button class="secondary-btn" onclick="setTemperature()">Set Temp</button>
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>Status</h2>
-    <div class="status-box" id="statusBox">
-      <div class="status-item">Loading status...</div>
-    </div>
-  </div>
-
-  <script>
-    let availableSongs = [];
-
-    async function fetchJSON(url, options = {}) {
-      const res = await fetch(url, options);
-      const data = await res.json();
-      return { res, data };
-    }
-
-    async function loadSongs() {
-      const { res, data } = await fetchJSON('/api/songs');
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to load songs');
-      }
-      availableSongs = data.songs || [];
-      renderSongOptions();
-    }
-
-    async function loadAlarms() {
-      const { res, data } = await fetchJSON('/api/alarms');
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to load alarms');
-      }
-      renderAlarms(data.alarms || []);
-    }
-
-    async function loadStatus() {
-      const statusBox = document.getElementById('statusBox');
-
-      try {
-        const { res, data } = await fetchJSON('/api/status');
-        if (!res.ok) {
-          throw new Error(data.error || 'Failed to load status');
-        }
-
-        statusBox.innerHTML = `
-          <div class="status-item"><strong>Time:</strong> ${data.current_time}</div>
-          <div class="status-item"><strong>Date:</strong> ${data.date}</div>
-          <div class="status-item"><strong>Outside Temp:</strong> ${data.temp_f}F</div>
-          <div class="status-item"><strong>Alarm Active:</strong> ${data.alarm_active ? 'Yes' : 'No'}</div>
-        `;
-      } catch (err) {
-        statusBox.innerHTML = `<div class="status-item">Status unavailable</div>`;
-      }
-    }
-
-    function renderSongOptions() {
-      const select = document.getElementById('songSelect');
-      const currentValue = select.value;
-
-      select.innerHTML = '<option value="">No custom song</option>';
-
-      availableSongs.forEach(song => {
-        const option = document.createElement('option');
-        option.value = song;
-        option.textContent = song;
-        select.appendChild(option);
-      });
-
-      if ([...select.options].some(opt => opt.value === currentValue)) {
-        select.value = currentValue;
-      }
-    }
-
-    function renderAlarms(alarms) {
-      const list = document.getElementById('alarmList');
-      list.innerHTML = '';
-
-      if (alarms.length === 0) {
-        list.innerHTML = '<li>No alarms set yet.</li>';
-        return;
-      }
-
-      alarms.forEach(alarm => {
-        const li = document.createElement('li');
-
-        const left = document.createElement('div');
-        left.className = 'alarm-left';
-
-        const timeSpan = document.createElement('div');
-        timeSpan.className = 'alarm-time';
-        timeSpan.textContent = alarm.time;
-
-        const songSpan = document.createElement('div');
-        songSpan.className = 'alarm-song';
-        songSpan.textContent = alarm.song ? `Song: ${alarm.song}` : 'Song: default';
-
-        left.appendChild(timeSpan);
-        left.appendChild(songSpan);
-
-        const btn = document.createElement('button');
-        btn.className = 'delete-btn';
-        btn.textContent = 'Delete';
-        btn.onclick = () => deleteAlarm(alarm.time);
-
-        li.appendChild(left);
-        li.appendChild(btn);
-        list.appendChild(li);
-      });
-    }
-
-    async function addAlarm() {
-      const input = document.getElementById('alarmTime');
-      const songSelect = document.getElementById('songSelect');
-      const msg = document.getElementById('message');
-
-      if (!input.value) {
-        msg.textContent = 'Please choose a time first.';
-        return;
-      }
-
-      const { res, data } = await fetchJSON('/api/alarms', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          time: input.value,
-          song: songSelect.value || null
-        })
-      });
-
-      if (!res.ok) {
-        msg.textContent = data.error || 'Failed to add alarm.';
-        return;
-      }
-
-      msg.textContent = `Added/updated alarm ${input.value}`;
-      input.value = '';
-      songSelect.value = '';
-
-      renderAlarms(data.alarms || []);
-      await loadSongs();
-      await loadStatus();
-    }
-
-    async function deleteAlarm(alarmTime) {
-      const msg = document.getElementById('message');
-      const encoded = encodeURIComponent(alarmTime);
-
-      const { res, data } = await fetchJSON(`/api/alarms/${encoded}`, {
-        method: 'DELETE'
-      });
-
-      if (!res.ok) {
-        msg.textContent = data.error || 'Failed to delete alarm.';
-        return;
-      }
-
-      msg.textContent = `Deleted alarm ${alarmTime}`;
-      renderAlarms(data.alarms || []);
-      await loadStatus();
-    }
-
-    async function uploadSong() {
-      const fileInput = document.getElementById('songFile');
-      const msg = document.getElementById('message');
-
-      if (!fileInput.files.length) {
-        msg.textContent = 'Please choose a file first.';
-        return;
-      }
-
-      const formData = new FormData();
-      formData.append('file', fileInput.files[0]);
-
-      const res = await fetch('/api/upload', {
-        method: 'POST',
-        body: formData
-      });
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        msg.textContent = data.error || 'Upload failed.';
-        return;
-      }
-
-      msg.textContent = `Uploaded ${data.filename}`;
-      fileInput.value = '';
-      await loadSongs();
-    }
-
-    async function setTemperature() {
-      const tempInput = document.getElementById('tempInput');
-      const msg = document.getElementById('message');
-
-      if (!tempInput.value) {
-        msg.textContent = 'Please enter a temperature.';
-        return;
-      }
-
-      const { res, data } = await fetchJSON('/api/weather', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ temp_f: tempInput.value })
-      });
-
-      if (!res.ok) {
-        msg.textContent = data.error || 'Failed to set temperature.';
-        return;
-      }
-
-      msg.textContent = `Set outside temperature to ${data.temp_f}F`;
-      tempInput.value = '';
-      await loadStatus();
-    }
-
-    async function initializePage() {
-      const msg = document.getElementById('message');
-
-      try {
-        await loadSongs();
-        await loadAlarms();
-        await loadStatus();
-      } catch (err) {
-        console.error(err);
-        msg.textContent = 'Failed to load page data.';
-      }
-    }
-
-    initializePage();
-    setInterval(loadStatus, 10000);
-  </script>
-</body>
-</html>
+<h1>Alarm Manager</h1>
+
+<input type="time" id="alarmTime">
+
+<select id="modeSelect">
+  <option value="easy">Calendar Empty</option>
+  <option value="boss">My boss will kill me</option>
+  <option value="puzzle">I love puzzles</option>
+</select>
+
+<button onclick="addAlarm()">Add</button>
+
+<ul id="alarmList"></ul>
+
+<script>
+async function loadAlarms() {
+  const res = await fetch('/api/alarms');
+  const data = await res.json();
+
+  const list = document.getElementById('alarmList');
+  list.innerHTML = '';
+
+  data.alarms.forEach(a => {
+    const li = document.createElement('li');
+    li.textContent = `${a.time} (${a.mode})`;
+
+    const btn = document.createElement('button');
+    btn.textContent = 'Delete';
+    btn.onclick = async () => {
+      await fetch(`/api/alarms/${a.time}`, {method:'DELETE'});
+      loadAlarms();
+    };
+
+    li.appendChild(btn);
+    list.appendChild(li);
+  });
+}
+
+async function addAlarm() {
+  const time = document.getElementById('alarmTime').value;
+  const mode = document.getElementById('modeSelect').value;
+
+  await fetch('/api/alarms', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({time, mode})
+  });
+
+  loadAlarms();
+}
+
+loadAlarms();
+</script>
