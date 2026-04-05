@@ -1,53 +1,550 @@
-<h1>Alarm Manager</h1>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Raspberry Pi Alarm Manager</title>
+  <style>
+    :root {
+      --bg: #f6f7fb;
+      --card: #ffffff;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --border: #e5e7eb;
+      --shadow: 0 12px 30px rgba(0, 0, 0, 0.08);
 
-<input type="time" id="alarmTime">
+      --blue: #2d89ef;
+      --blue-dark: #1f6fcb;
+      --red: #d9534f;
+      --red-dark: #c33f3b;
+      --green: #5cb85c;
+      --green-dark: #4cae4c;
+      --gray: #6b7280;
+      --gray-dark: #4b5563;
+      --yellow: #f0ad4e;
+    }
 
-<select id="modeSelect">
-  <option value="easy">Calendar Empty</option>
-  <option value="boss">My boss will kill me</option>
-  <option value="puzzle">I love puzzles</option>
-</select>
+    * {
+      box-sizing: border-box;
+    }
 
-<button onclick="addAlarm()">Add</button>
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: linear-gradient(180deg, #f8f9fc 0%, #eef2f7 100%);
+      color: var(--text);
+    }
 
-<ul id="alarmList"></ul>
+    .page {
+      max-width: 920px;
+      margin: 36px auto;
+      padding: 0 16px 40px;
+    }
 
-<script>
-async function loadAlarms() {
-  const res = await fetch('/api/alarms');
-  const data = await res.json();
+    .hero {
+      margin-bottom: 18px;
+    }
 
-  const list = document.getElementById('alarmList');
-  list.innerHTML = '';
+    .hero h1 {
+      margin: 0 0 8px;
+      font-size: 2rem;
+    }
 
-  data.alarms.forEach(a => {
-    const li = document.createElement('li');
-    li.textContent = `${a.time} (${a.mode})`;
+    .hero p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 1rem;
+    }
 
-    const btn = document.createElement('button');
-    btn.textContent = 'Delete';
-    btn.onclick = async () => {
-      await fetch(`/api/alarms/${a.time}`, {method:'DELETE'});
-      loadAlarms();
+    .grid {
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 20px;
+    }
+
+    .card {
+      background: var(--card);
+      border-radius: 16px;
+      padding: 22px;
+      box-shadow: var(--shadow);
+      border: 1px solid rgba(229, 231, 235, 0.9);
+    }
+
+    .card h2 {
+      margin: 0 0 16px;
+      font-size: 1.2rem;
+    }
+
+    .form-row {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+    }
+
+    .input-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .small-label {
+      font-size: 0.88rem;
+      color: var(--muted);
+      font-weight: 600;
+    }
+
+    input[type="time"],
+    select {
+      min-width: 180px;
+      font-size: 1rem;
+      padding: 11px 12px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: #fff;
+      color: var(--text);
+      outline: none;
+    }
+
+    input[type="time"]:focus,
+    select:focus {
+      border-color: var(--blue);
+      box-shadow: 0 0 0 3px rgba(45, 137, 239, 0.12);
+    }
+
+    button {
+      border: none;
+      border-radius: 10px;
+      padding: 11px 16px;
+      font-size: 0.98rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform 0.04s ease, background 0.15s ease, opacity 0.15s ease;
+    }
+
+    button:active {
+      transform: translateY(1px);
+    }
+
+    .add-btn {
+      background: var(--blue);
+      color: #fff;
+    }
+
+    .add-btn:hover {
+      background: var(--blue-dark);
+    }
+
+    .delete-btn {
+      background: var(--red);
+      color: #fff;
+    }
+
+    .delete-btn:hover {
+      background: var(--red-dark);
+    }
+
+    .cancel-btn {
+      background: var(--gray);
+      color: #fff;
+    }
+
+    .cancel-btn:hover {
+      background: var(--gray-dark);
+    }
+
+    .mode-grid {
+      display: grid;
+      gap: 10px;
+      margin: 10px 0 18px;
+    }
+
+    .mode-card {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px 14px;
+      background: #fafafa;
+      transition: border-color 0.15s ease, background 0.15s ease;
+    }
+
+    .mode-card.active {
+      border-color: var(--blue);
+      background: rgba(45, 137, 239, 0.06);
+    }
+
+    .mode-title {
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+
+    .mode-desc {
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    ul {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+
+    .alarm-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 14px;
+      padding: 14px 0;
+      border-bottom: 1px solid #eee;
+      flex-wrap: wrap;
+    }
+
+    .alarm-left {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .alarm-time {
+      font-size: 1.15rem;
+      font-weight: 700;
+    }
+
+    .alarm-mode {
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    .alarm-tag {
+      display: inline-block;
+      margin-left: 8px;
+      font-size: 0.78rem;
+      font-weight: 700;
+      background: #eef4ff;
+      color: var(--blue-dark);
+      border-radius: 999px;
+      padding: 4px 8px;
+      vertical-align: middle;
+    }
+
+    .status-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .status-box {
+      background: #f8fafc;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px 14px;
+    }
+
+    .status-label {
+      color: var(--muted);
+      font-size: 0.85rem;
+      margin-bottom: 4px;
+    }
+
+    .status-value {
+      font-size: 1.05rem;
+      font-weight: 700;
+    }
+
+    .msg {
+      min-height: 22px;
+      margin-top: 14px;
+      color: var(--text);
+      font-size: 0.96rem;
+    }
+
+    .empty-state {
+      color: var(--muted);
+      padding: 10px 0 2px;
+    }
+
+    @media (max-width: 760px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      .form-row {
+        flex-direction: column;
+        align-items: stretch;
+      }
+
+      input[type="time"],
+      select,
+      button {
+        width: 100%;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="hero">
+      <h1>Alarm Manager</h1>
+      <p>Set your alarm time, choose how painful waking up should be, and manage everything from one clean panel.</p>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h2>Create Alarm</h2>
+
+        <div class="form-row">
+          <div class="input-wrap">
+            <label class="small-label" for="alarmTime">Alarm time</label>
+            <input type="time" id="alarmTime" />
+          </div>
+
+          <div class="input-wrap" style="flex: 1;">
+            <label class="small-label" for="modeSelect">Puzzle mode</label>
+            <select id="modeSelect" onchange="highlightModeCard()">
+              <option value="easy">Calendar Empty</option>
+              <option value="boss">My boss will kill me if I don't wake up</option>
+              <option value="puzzle">I love puzzles</option>
+            </select>
+          </div>
+
+          <div class="input-wrap">
+            <label class="small-label" style="visibility: hidden;">Add</label>
+            <button class="add-btn" onclick="addAlarm()">Add Alarm</button>
+          </div>
+        </div>
+
+        <div class="mode-grid" id="modeGrid">
+          <div class="mode-card active" data-mode="easy">
+            <div class="mode-title">Calendar Empty</div>
+            <div class="mode-desc">One math problem. Fastest way to turn it off.</div>
+          </div>
+          <div class="mode-card" data-mode="boss">
+            <div class="mode-title">My boss will kill me if I don't wake up</div>
+            <div class="mode-desc">LED pattern, one math problem, then another LED pattern.</div>
+          </div>
+          <div class="mode-card" data-mode="puzzle">
+            <div class="mode-title">I love puzzles</div>
+            <div class="mode-desc">Two longer LED sequences and three harder math problems.</div>
+          </div>
+        </div>
+
+        <h2 style="margin-top: 22px;">Scheduled Alarms</h2>
+        <ul id="alarmList"></ul>
+        <div class="msg" id="message"></div>
+      </div>
+
+      <div class="card">
+        <h2>Live Status</h2>
+
+        <div class="status-list" id="statusBox">
+          <div class="status-box">
+            <div class="status-label">Loading</div>
+            <div class="status-value">Please wait...</div>
+          </div>
+        </div>
+
+        <div style="margin-top: 18px;">
+          <button class="cancel-btn" onclick="cancelAlarm()">Cancel Active Alarm</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const MODE_LABELS = {
+      easy: "Calendar Empty",
+      boss: "My boss will kill me if I don't wake up",
+      puzzle: "I love puzzles"
     };
 
-    li.appendChild(btn);
-    list.appendChild(li);
-  });
-}
+    const MODE_SHORT = {
+      easy: "Easy",
+      boss: "Boss",
+      puzzle: "Puzzle"
+    };
 
-async function addAlarm() {
-  const time = document.getElementById('alarmTime').value;
-  const mode = document.getElementById('modeSelect').value;
+    async function fetchJSON(url, options = {}) {
+      const res = await fetch(url, options);
+      const data = await res.json();
+      return { res, data };
+    }
 
-  await fetch('/api/alarms', {
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({time, mode})
-  });
+    function setMessage(text) {
+      document.getElementById("message").textContent = text;
+    }
 
-  loadAlarms();
-}
+    function highlightModeCard() {
+      const selected = document.getElementById("modeSelect").value;
+      document.querySelectorAll(".mode-card").forEach(card => {
+        card.classList.toggle("active", card.dataset.mode === selected);
+      });
+    }
 
-loadAlarms();
-</script>
+    function renderAlarms(alarms) {
+      const list = document.getElementById("alarmList");
+      list.innerHTML = "";
+
+      if (!alarms.length) {
+        list.innerHTML = '<div class="empty-state">No alarms set yet.</div>';
+        return;
+      }
+
+      alarms.forEach(alarm => {
+        const li = document.createElement("li");
+        li.className = "alarm-item";
+
+        const left = document.createElement("div");
+        left.className = "alarm-left";
+
+        const timeRow = document.createElement("div");
+        timeRow.className = "alarm-time";
+        timeRow.innerHTML = `${alarm.time} <span class="alarm-tag">${MODE_SHORT[alarm.mode] || "Easy"}</span>`;
+
+        const modeRow = document.createElement("div");
+        modeRow.className = "alarm-mode";
+        modeRow.textContent = MODE_LABELS[alarm.mode] || MODE_LABELS.easy;
+
+        left.appendChild(timeRow);
+        left.appendChild(modeRow);
+
+        const del = document.createElement("button");
+        del.className = "delete-btn";
+        del.textContent = "Delete";
+        del.onclick = () => deleteAlarm(alarm.time);
+
+        li.appendChild(left);
+        li.appendChild(del);
+        list.appendChild(li);
+      });
+    }
+
+    async function loadAlarms() {
+      const { res, data } = await fetchJSON("/api/alarms");
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to load alarms");
+      }
+      renderAlarms(data.alarms || []);
+    }
+
+    async function loadStatus() {
+      const statusBox = document.getElementById("statusBox");
+
+      try {
+        const { res, data } = await fetchJSON("/api/status");
+        if (!res.ok) {
+          throw new Error(data.error || "Failed to load status");
+        }
+
+        statusBox.innerHTML = `
+          <div class="status-box">
+            <div class="status-label">Current time</div>
+            <div class="status-value">${data.current_time}</div>
+          </div>
+          <div class="status-box">
+            <div class="status-label">Date</div>
+            <div class="status-value">${data.date}</div>
+          </div>
+          <div class="status-box">
+            <div class="status-label">Outside temperature</div>
+            <div class="status-value">${data.temp_f}F</div>
+          </div>
+          <div class="status-box">
+            <div class="status-label">Alarm state</div>
+            <div class="status-value">${data.alarm_active ? "Alarm running" : "Idle"}</div>
+          </div>
+        `;
+      } catch (err) {
+        statusBox.innerHTML = `
+          <div class="status-box">
+            <div class="status-label">Status</div>
+            <div class="status-value">Unavailable</div>
+          </div>
+        `;
+      }
+    }
+
+    async function addAlarm() {
+      const timeInput = document.getElementById("alarmTime");
+      const modeSelect = document.getElementById("modeSelect");
+
+      if (!timeInput.value) {
+        setMessage("Please choose a time first.");
+        return;
+      }
+
+      const { res, data } = await fetchJSON("/api/alarms", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          time: timeInput.value,
+          mode: modeSelect.value
+        })
+      });
+
+      if (!res.ok) {
+        setMessage(data.error || "Failed to add alarm.");
+        return;
+      }
+
+      setMessage(`Added/updated alarm ${timeInput.value}`);
+      timeInput.value = "";
+      modeSelect.value = "easy";
+      highlightModeCard();
+      renderAlarms(data.alarms || []);
+      await loadStatus();
+    }
+
+    async function deleteAlarm(alarmTime) {
+      const encoded = encodeURIComponent(alarmTime);
+
+      const { res, data } = await fetchJSON(`/api/alarms/${encoded}`, {
+        method: "DELETE"
+      });
+
+      if (!res.ok) {
+        setMessage(data.error || "Failed to delete alarm.");
+        return;
+      }
+
+      setMessage(`Deleted alarm ${alarmTime}`);
+      renderAlarms(data.alarms || []);
+      await loadStatus();
+    }
+
+    async function cancelAlarm() {
+      const { res, data } = await fetchJSON("/api/cancel", {
+        method: "POST"
+      });
+
+      if (!res.ok) {
+        setMessage(data.message || "Could not cancel alarm.");
+        return;
+      }
+
+      setMessage(data.message || "Cancel requested.");
+      await loadStatus();
+    }
+
+    async function initializePage() {
+      highlightModeCard();
+
+      document.querySelectorAll(".mode-card").forEach(card => {
+        card.addEventListener("click", () => {
+          document.getElementById("modeSelect").value = card.dataset.mode;
+          highlightModeCard();
+        });
+      });
+
+      try {
+        await loadAlarms();
+        await loadStatus();
+      } catch (err) {
+        console.error(err);
+        setMessage("Failed to load page data.");
+      }
+    }
+
+    initializePage();
+    setInterval(loadStatus, 10000);
+  </script>
+</body>
+</html>
