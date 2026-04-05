@@ -50,6 +50,20 @@ DEFAULT_TEMP_F = "--"
 
 # Puzzle modes
 VALID_MODES = {"easy", "boss", "puzzle"}
+MODE_META = {
+    "easy": {
+        "label": "Calendar Empty",
+        "desc": "1 math puzzle",
+    },
+    "boss": {
+        "label": "My boss will kill me",
+        "desc": "LED → Math → LED",
+    },
+    "puzzle": {
+        "label": "I love puzzles",
+        "desc": "2 LED + 3 hard math",
+    },
+}
 MODES = {
     "easy": ["math"],
     "boss": ["led", "math", "led"],
@@ -84,7 +98,8 @@ lcd = CharLCD("PCF8574", 0x27)
 lcd_lock = threading.Lock()
 _last_line1 = None
 _last_line2 = None
-_msg_override = threading.Event()
+_msg_override = threading.Event()      # short temporary messages
+_alarm_display_active = threading.Event()  # keeps clock thread from overwriting puzzle screens
 _stop_clock = threading.Event()
 
 # ============================================================
@@ -292,13 +307,16 @@ def lcd_show(line1: str = "", line2: str = "", force: bool = False):
             lcd.write_string(line2)
             _last_line2 = line2
 
-def lcd_show_temp(line1: str = "", line2: str = "", duration: float = 1.5):
+def lcd_clear_cache():
     global _last_line1, _last_line2
-    _msg_override.set()
     with lcd_lock:
         lcd.clear()
         _last_line1 = None
         _last_line2 = None
+
+def lcd_show_temp(line1: str = "", line2: str = "", duration: float = 1.5):
+    _msg_override.set()
+    lcd_clear_cache()
     lcd_show(line1, line2, force=True)
     time.sleep(duration)
     _msg_override.clear()
@@ -320,7 +338,7 @@ def build_clock_lines() -> tuple[str, str]:
 
 def clock_loop():
     while not _stop_clock.is_set():
-        if not _msg_override.is_set():
+        if not _msg_override.is_set() and not _alarm_display_active.is_set():
             line1, line2 = build_clock_lines()
             lcd_show(line1, line2)
         time.sleep(0.2)
@@ -411,13 +429,20 @@ def _show_pattern(pattern: list[str]):
 
 def _get_user_pattern(length: int) -> list[str]:
     entered = []
-    lcd_show_temp("Enter pattern", "", 1.0)
+    lcd_show("Enter pattern", "Repeat it", force=True)
 
-    for _ in range(length):
+    for i in range(length):
+        if alarm_state.should_cancel():
+            return entered
+
         pressed = wait_for_button_press()
         if pressed is None:
             return entered
+
         entered.append(pressed)
+        progress = f"{i+1}/{length}"
+        lcd_show("Enter pattern", progress, force=True)
+
         GPIO.output(LED_PINS[pressed], GPIO.HIGH)
         time.sleep(0.15)
         GPIO.output(LED_PINS[pressed], GPIO.LOW)
@@ -455,10 +480,13 @@ def _generate_math_problem(hard=False):
         if 0 <= ans <= 99:
             return a, op, b, ans
 
-def _choose_digit(label: str) -> int:
+def _choose_digit(label: str, top_line: str) -> int:
     digit = 0
     while True:
-        lcd_show(label, f"Digit: {digit}", force=True)
+        if alarm_state.should_cancel():
+            return -1
+
+        lcd_show(top_line, f"{label}: {digit}", force=True)
         pressed = wait_for_button_press()
 
         if pressed == "red":
@@ -486,21 +514,27 @@ def run_math(hard=False):
         if alarm_state.should_cancel():
             return False
 
-        lcd_show_temp("Solve this:", f"{a}{op}{b}=?", 2.0)
+        question = f"{a}{op}{b}=?"
+        lcd_show_temp("Solve this:", question, 1.4)
 
-        tens = _choose_digit("Select tens")
-        ones = _choose_digit("Select ones")
+        tens = _choose_digit("Tens", question)
+        if tens < 0:
+            return False
+
+        ones = _choose_digit("Ones", question)
+        if ones < 0:
+            return False
+
         user_answer = tens * 10 + ones
-
-        lcd_show_temp("Your answer:", str(user_answer), 1.2)
+        lcd_show_temp("Your answer:", str(user_answer), 1.0)
 
         if user_answer == answer:
-            lcd_show_temp("Math correct!", "Nice job", 1.8)
+            lcd_show_temp("Math correct!", "Nice job", 1.6)
             return True
 
-        lcd_show_temp("Incorrect", "Try again", 2.0)
+        lcd_show_temp("Incorrect", "Try again", 1.8)
         flash_all_leds(times=2)
-        time.sleep(0.8)
+        time.sleep(0.6)
 
 # ============================================================
 # LED CHALLENGE
@@ -517,12 +551,12 @@ def run_led(length=5):
         user = _get_user_pattern(length)
 
         if user == pattern:
-            lcd_show_temp("Pattern correct", "", 1.8)
+            lcd_show_temp("Pattern correct", "", 1.6)
             return True
 
-        lcd_show_temp("Wrong", "Retry", 2.0)
+        lcd_show_temp("Wrong", "Retry", 1.8)
         flash_all_leds(times=2)
-        time.sleep(0.8)
+        time.sleep(0.6)
 
 # ============================================================
 # PUZZLE ENGINE
@@ -557,20 +591,26 @@ def run_mode(mode: str):
 def run_alarm(alarm_time: str, mode: str):
     print(f"[alarm] firing: {alarm_time} mode={mode}")
     alarm_state.set_active(True)
+    _alarm_display_active.set()
     start_audio(None)
 
     try:
+        meta = MODE_META.get(mode, MODE_META["easy"])
+        lcd_show_temp("Alarm started", meta["label"][:16], 1.4)
+
         if not run_mode(mode):
             print("[alarm] cancelled during challenge")
             return
 
-        lcd_show_temp("Done!", "Good morning", 2.5)
+        lcd_show_temp("Done!", "Good morning", 2.0)
         print("[alarm] challenge complete")
 
     finally:
         stop_audio()
         all_leds_off()
         alarm_state.set_active(False)
+        _alarm_display_active.clear()
+        lcd_clear_cache()
 
 # ============================================================
 # ALARM CHECKER LOOP
@@ -663,6 +703,7 @@ def api_status():
         "current_time": strftime("%H:%M"),
         "temp_f": temp,
         "date": strftime("%m/%d/%Y"),
+        "modes": MODE_META,
     })
 
 @app.route("/api/weather", methods=["GET"])
