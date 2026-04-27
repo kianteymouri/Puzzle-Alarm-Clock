@@ -658,6 +658,10 @@ def run_mode(mode: str):
             if not run_led(length):
                 return False
 
+        elif step == "proximity":
+            if not run_proximity_challenge():
+                return False
+
     return True
 
 # ============================================================
