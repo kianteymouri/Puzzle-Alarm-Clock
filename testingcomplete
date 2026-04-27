@@ -9,6 +9,7 @@ import json
 import os
 import re
 import fcntl
+import requests
 from time import strftime
 
 import RPi.GPIO as GPIO
@@ -18,6 +19,34 @@ from flask import Flask, request, jsonify, render_template
 # ============================================================
 # CONFIG
 # ============================================================
+
+LAT = "37.87093431157077"  # Replace with your latitude
+LON = "-122.25960535422949" # Replace with your longitude
+
+def update_weather_from_internet():
+    global outside_temp_f
+    # API URL for Fahrenheit and current weather
+    url = f"https://api.open-meteo.com/v1/forecast?latitude={LAT}&longitude={LON}&current_weather=true&temperature_unit=fahrenheit"
+    
+    while True:
+        try:
+            response = requests.get(url, timeout=10)
+            data = response.json()
+            
+            if "current_weather" in data:
+                new_temp = data["current_weather"]["temperature"]
+                # Use your existing function to save/normalize it
+                set_outside_temp(new_temp)
+                print(f"[weather] Successfully updated to {new_temp}F")
+            else:
+                print("[weather] Error: Unexpected API response format")
+                
+        except Exception as e:
+            print(f"[weather] Connection failed: {e}")
+        
+        # Sync every 20 minutes
+        time.sleep(1200)
+
 
 ALARMS_FILE = "/home/kian/alarm_web/alarms.json"
 WEATHER_FILE = "/home/kian/alarm_web/weather.json"
@@ -809,6 +838,9 @@ def initialize_files():
 
 def main():
     initialize_files()
+    
+    weather_thread = threading.Thread(target=update_weather_from_internet, daemon=True)
+    weather_thread.start()
 
     clock_thread = threading.Thread(target=clock_loop, daemon=True)
     clock_thread.start()
