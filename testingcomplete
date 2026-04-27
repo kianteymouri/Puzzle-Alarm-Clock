@@ -1,3 +1,7 @@
+"""
+main.py — Smart Alarm Clock with Ultrasonic Proximity Challenge
+"""
+
 import threading
 import time
 import random
@@ -10,3 +14,832 @@ from time import strftime
 import RPi.GPIO as GPIO
 from RPLCD.i2c import CharLCD
 from flask import Flask, request, jsonify, render_template
+
+# ============================================================
+# CONFIG
+# ============================================================
+
+ALARMS_FILE = "/home/kian/alarm_web/alarms.json"
+WEATHER_FILE = "/home/kian/alarm_web/weather.json"
+
+FLASK_HOST = "0.0.0.0"
+FLASK_PORT = 5000
+
+# GPIO pin numbers (BCM)
+GREEN_BTN = 17
+YELLOW_BTN = 27
+RED_BTN = 22
+RED_LED = 23
+YELLOW_LED = 24
+GREEN_LED = 25
+BUZZER_PIN = 26
+
+# --- ULTRASONIC SENSOR PINS ---
+TRIG_PIN = 18
+ECHO_PIN = 28 
+
+# Timing / display
+FLASH_ON_TIME = 0.5
+FLASH_OFF_TIME = 0.25
+DEBOUNCE_TIME = 0.2
+NOTE_DURATION = 0.18
+NOTE_GAP = 0.03
+LCD_WIDTH = 16
+DEFAULT_TEMP_F = "--"
+
+# Puzzle modes
+VALID_MODES = {"easy", "boss", "puzzle"}
+MODE_META = {
+    "easy": {
+        "label": "Calendar Empty",
+        "desc": "1 math puzzle",
+    },
+    "boss": {
+        "label": "My boss will kill me",
+        "desc": "LED -> Math -> Proximity",
+    },
+    "puzzle": {
+        "label": "I love puzzles",
+        "desc": "LED -> Proximity -> Hard Math",
+    },
+}
+# Updated MODES to include "proximity"
+MODES = {
+    "easy": ["math"],
+    "boss": ["led", "math", "proximity"],
+    "puzzle": ["led", "proximity", "math_hard", "math_hard", "math_hard"],
+}
+
+
+
+
+# ============================================================
+# GPIO / HARDWARE SETUP
+# ============================================================
+
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(GREEN_BTN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+GPIO.setup(YELLOW_BTN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+GPIO.setup(RED_BTN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+GPIO.setup(RED_LED, GPIO.OUT)
+GPIO.setup(YELLOW_LED, GPIO.OUT)
+GPIO.setup(GREEN_LED, GPIO.OUT)
+GPIO.setup(BUZZER_PIN, GPIO.OUT)
+
+# Sensor Setup
+GPIO.setup(TRIG_PIN, GPIO.OUT)
+GPIO.setup(ECHO_PIN, GPIO.IN)
+
+buzzer_pwm = GPIO.PWM(BUZZER_PIN, 200)
+
+LED_PINS = {"red": RED_LED, "yellow": YELLOW_LED, "green": GREEN_LED}
+BTN_PINS = {"red": RED_BTN, "yellow": YELLOW_BTN, "green": GREEN_BTN}
+COLORS = ["red", "yellow", "green"]
+
+# ============================================================
+# ULTRASONIC HELPERS
+# ============================================================
+
+def get_distance():
+    """Returns distance in cm."""
+    GPIO.output(TRIG_PIN, False)
+    time.sleep(0.01)
+
+    GPIO.output(TRIG_PIN, True)
+    time.sleep(0.00001)
+    GPIO.output(TRIG_PIN, False)
+
+    start_time = time.time()
+    stop_time = time.time()
+
+    # Wait for echo to start
+    timeout_start = time.time()
+    while GPIO.input(ECHO_PIN) == 0:
+        start_time = time.time()
+        if start_time - timeout_start > 0.1: # Timeout after 100ms
+            return 999
+
+    # Wait for echo to end
+    while GPIO.input(ECHO_PIN) == 1:
+        stop_time = time.time()
+
+    duration = stop_time - start_time
+    distance = (duration * 34300) / 2
+    return distance
+
+# ============================================================
+# PROXIMITY CHALLENGE
+# ============================================================
+
+def run_proximity_challenge(target_min=5, target_max=15, hold_seconds=3):
+    lcd_show_temp("Proximity Task", "Hold hand close", 1.5)
+    start_hold = None
+    
+    while True:
+        if alarm_state.should_cancel():
+            return False
+            
+        dist = get_distance()
+        
+        # If hand is within the range (5cm to 15cm)
+        if target_min <= dist <= target_max:
+            if start_hold is None:
+                start_hold = time.time()
+            
+            elapsed = time.time() - start_hold
+            remaining = max(0, hold_seconds - elapsed)
+            
+            lcd_show("Hold Steady!", f"{round(remaining, 1)}s left", force=True)
+            GPIO.output(GREEN_LED, GPIO.HIGH) 
+            
+            if elapsed >= hold_seconds:
+                GPIO.output(GREEN_LED, GPIO.LOW)
+                lcd_show_temp("Great Work!", "Sensor Passed", 1.6)
+                return True
+        else:
+            # If hand moved away, reset the timer
+            start_hold = None
+            GPIO.output(GREEN_LED, GPIO.LOW)
+            lcd_show("Target: 5-15cm", f"Current: {int(dist)}cm", force=True)
+            
+        time.sleep(0.1)
+
+
+# ============================================================
+# LCD SETUP
+# ============================================================
+
+lcd = CharLCD("PCF8574", 0x27)
+
+lcd_lock = threading.Lock()
+_last_line1 = None
+_last_line2 = None
+_msg_override = threading.Event()      # short temporary messages
+_alarm_display_active = threading.Event()  # keeps clock thread from overwriting puzzle screens
+_stop_clock = threading.Event()
+
+# ============================================================
+# WEATHER STATE
+# ============================================================
+
+weather_lock = threading.Lock()
+outside_temp_f = DEFAULT_TEMP_F
+
+# ============================================================
+# BUZZER TUNE
+# ============================================================
+
+C4 = 262
+D4 = 294
+E4 = 330
+F4 = 349
+G4 = 392
+A4 = 440
+B4 = 494
+C5 = 523
+D5 = 587
+E5 = 659
+F5 = 698
+G5 = 784
+B3 = 247
+
+TUNE = [
+    C4, E4, G4, C5, E5, G4, C5, E5,
+    C4, E4, G4, C5, E5, G4, C5, E5,
+    C4, D4, G4, D5, F5, G4, D5, F5,
+    C4, D4, G4, D5, F5, G4, D5, F5,
+    B3, D4, G4, D5, F5, G4, D5, F5,
+    C4, E4, G4, C5, E5, G4, C5, E5,
+]
+
+# ============================================================
+# SHARED ALARM STATE
+# ============================================================
+
+class AlarmState:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.triggered_stamps = set()
+        self.alarm_active = False
+        self.cancel_requested = False
+
+    def mark_triggered(self, stamp: str):
+        with self._lock:
+            self.triggered_stamps.add(stamp)
+
+    def already_triggered(self, stamp: str) -> bool:
+        with self._lock:
+            return stamp in self.triggered_stamps
+
+    def set_active(self, value: bool):
+        with self._lock:
+            self.alarm_active = value
+            if not value:
+                self.cancel_requested = False
+
+    def request_cancel(self):
+        with self._lock:
+            self.cancel_requested = True
+
+    def should_cancel(self) -> bool:
+        with self._lock:
+            return self.cancel_requested
+
+
+alarm_state = AlarmState()
+
+# ============================================================
+# FILE I/O
+# ============================================================
+
+TIME_RE = re.compile(r"^\d{2}:\d{2}$")
+
+def _valid_time(t: str) -> bool:
+    if not TIME_RE.match(t):
+        return False
+    h, m = t.split(":")
+    return 0 <= int(h) <= 23 and 0 <= int(m) <= 59
+
+def load_alarms() -> list[dict]:
+    """
+    Returns a list of alarm dicts like:
+        {"time": "07:30", "mode": "easy"}
+    Supports legacy string alarms too.
+    """
+    if not os.path.exists(ALARMS_FILE):
+        return []
+
+    try:
+        with open(ALARMS_FILE, "r") as f:
+            fcntl.flock(f, fcntl.LOCK_SH)
+            data = json.load(f)
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+        if not isinstance(data, list):
+            return []
+
+        normalized = []
+        for item in data:
+            if isinstance(item, str):
+                normalized.append({"time": item, "mode": "easy"})
+            elif isinstance(item, dict) and "time" in item:
+                mode = item.get("mode", "easy")
+                if mode not in VALID_MODES:
+                    mode = "easy"
+                normalized.append({
+                    "time": item["time"],
+                    "mode": mode,
+                })
+        return normalized
+
+    except Exception as e:
+        print(f"[alarm] load error: {e}")
+        return []
+
+def save_alarms(alarms: list[dict]):
+    seen = {}
+    for alarm in alarms:
+        t = alarm.get("time", "")
+        if not t:
+            continue
+        mode = alarm.get("mode", "easy")
+        if mode not in VALID_MODES:
+            mode = "easy"
+        seen[t] = {"time": t, "mode": mode}
+
+    ordered = sorted(seen.values(), key=lambda x: x["time"])
+
+    tmp = ALARMS_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        json.dump(ordered, f, indent=2)
+        fcntl.flock(f, fcntl.LOCK_UN)
+    os.replace(tmp, ALARMS_FILE)
+
+def load_weather_temp() -> str:
+    if not os.path.exists(WEATHER_FILE):
+        return DEFAULT_TEMP_F
+
+    try:
+        with open(WEATHER_FILE, "r") as f:
+            data = json.load(f)
+        raw = data.get("temp_f", DEFAULT_TEMP_F)
+        return normalize_temp_value(raw)
+    except Exception as e:
+        print(f"[weather] load error: {e}")
+        return DEFAULT_TEMP_F
+
+def save_weather_temp(temp_value: str):
+    tmp = WEATHER_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump({"temp_f": temp_value}, f, indent=2)
+    os.replace(tmp, WEATHER_FILE)
+
+def normalize_temp_value(value) -> str:
+    if value is None:
+        return DEFAULT_TEMP_F
+
+    try:
+        if isinstance(value, str):
+            value = value.strip()
+            if value == "":
+                return DEFAULT_TEMP_F
+            value = float(value)
+        return str(int(round(float(value))))
+    except Exception:
+        return DEFAULT_TEMP_F
+
+def set_outside_temp(value):
+    global outside_temp_f
+    normalized = normalize_temp_value(value)
+    with weather_lock:
+        outside_temp_f = normalized
+    save_weather_temp(normalized)
+
+# ============================================================
+# LCD HELPERS
+# ============================================================
+
+def fit_lcd(text: str) -> str:
+    return str(text)[:LCD_WIDTH].ljust(LCD_WIDTH)
+
+def center_lcd(text: str) -> str:
+    return str(text)[:LCD_WIDTH].center(LCD_WIDTH)
+
+def lcd_show(line1: str = "", line2: str = "", force: bool = False):
+    global _last_line1, _last_line2
+
+    line1 = fit_lcd(line1)
+    line2 = fit_lcd(line2)
+
+    with lcd_lock:
+        if force or line1 != _last_line1:
+            lcd.cursor_pos = (0, 0)
+            lcd.write_string(line1)
+            _last_line1 = line1
+
+        if force or line2 != _last_line2:
+            lcd.cursor_pos = (1, 0)
+            lcd.write_string(line2)
+            _last_line2 = line2
+
+def lcd_clear_cache():
+    global _last_line1, _last_line2
+    with lcd_lock:
+        lcd.clear()
+        _last_line1 = None
+        _last_line2 = None
+
+def lcd_show_temp(line1: str = "", line2: str = "", duration: float = 1.5):
+    _msg_override.set()
+    lcd_clear_cache()
+    lcd_show(line1, line2, force=True)
+    time.sleep(duration)
+    _msg_override.clear()
+
+def build_clock_lines() -> tuple[str, str]:
+    now_time = strftime("%I:%M %p").lstrip("0")
+    now_date = strftime("%m/%d/%Y")
+
+    with weather_lock:
+        temp = outside_temp_f
+
+    line1 = center_lcd(now_time)
+    line2 = fit_lcd(f"{temp}F {now_date}")
+    return line1, line2
+
+# ============================================================
+# CLOCK DISPLAY THREAD
+# ============================================================
+
+def clock_loop():
+    while not _stop_clock.is_set():
+        if not _msg_override.is_set() and not _alarm_display_active.is_set():
+            line1, line2 = build_clock_lines()
+            lcd_show(line1, line2)
+        time.sleep(0.2)
+
+# ============================================================
+# LED / BUZZER HELPERS
+# ============================================================
+
+def all_leds_off():
+    for pin in LED_PINS.values():
+        GPIO.output(pin, GPIO.LOW)
+
+def flash_led(color: str, on_time=FLASH_ON_TIME, off_time=FLASH_OFF_TIME):
+    all_leds_off()
+    GPIO.output(LED_PINS[color], GPIO.HIGH)
+    time.sleep(on_time)
+    GPIO.output(LED_PINS[color], GPIO.LOW)
+    time.sleep(off_time)
+
+def flash_all_leds(times=3, on_time=0.3, off_time=0.3):
+    for _ in range(times):
+        for pin in LED_PINS.values():
+            GPIO.output(pin, GPIO.HIGH)
+        time.sleep(on_time)
+        all_leds_off()
+        time.sleep(off_time)
+
+def play_note(freq: int, duration: float):
+    buzzer_pwm.ChangeFrequency(freq)
+    buzzer_pwm.start(50)
+    time.sleep(duration)
+    buzzer_pwm.stop()
+    time.sleep(NOTE_GAP)
+
+# ============================================================
+# AUDIO
+# ============================================================
+
+_stop_music = threading.Event()
+
+def start_audio(_unused=None):
+    _stop_music.clear()
+    threading.Thread(target=_buzzer_loop, daemon=True).start()
+
+def _buzzer_loop():
+    while not _stop_music.is_set():
+        for note in TUNE:
+            if _stop_music.is_set():
+                break
+            play_note(note, NOTE_DURATION)
+
+def stop_audio():
+    _stop_music.set()
+    try:
+        buzzer_pwm.stop()
+    except Exception:
+        pass
+
+# ============================================================
+# BUTTON INPUT
+# ============================================================
+
+def wait_for_button_press(timeout: float | None = None) -> str | None:
+    deadline = (time.monotonic() + timeout) if timeout else None
+
+    while True:
+        for color, pin in BTN_PINS.items():
+            if GPIO.input(pin) == GPIO.LOW:
+                while GPIO.input(pin) == GPIO.LOW:
+                    time.sleep(0.01)
+                time.sleep(DEBOUNCE_TIME)
+                return color
+
+        if deadline and time.monotonic() >= deadline:
+            return None
+
+        time.sleep(0.01)
+
+# ============================================================
+# PATTERN HELPERS
+# ============================================================
+
+def _show_pattern(pattern: list[str]):
+    lcd_show_temp("Watch pattern", "", 1.0)
+    time.sleep(0.3)
+    for color in pattern:
+        flash_led(color)
+
+def _get_user_pattern(length: int) -> list[str]:
+    entered = []
+    lcd_show("Enter pattern", "Repeat it", force=True)
+
+    for i in range(length):
+        if alarm_state.should_cancel():
+            return entered
+
+        pressed = wait_for_button_press()
+        if pressed is None:
+            return entered
+
+        entered.append(pressed)
+        progress = f"{i+1}/{length}"
+        lcd_show("Enter pattern", progress, force=True)
+
+        GPIO.output(LED_PINS[pressed], GPIO.HIGH)
+        time.sleep(0.15)
+        GPIO.output(LED_PINS[pressed], GPIO.LOW)
+
+    return entered
+
+# ============================================================
+# MATH CHALLENGES
+# ============================================================
+
+def _generate_math_problem(hard=False):
+    while True:
+        op = random.choice(["+", "-", "*"])
+
+        if hard:
+            if op == "+":
+                a = random.randint(20, 99)
+                b = random.randint(10, 99)
+            elif op == "-":
+                a = random.randint(20, 99)
+                b = random.randint(0, a)
+            else:
+                a = random.randint(4, 9)
+                b = random.randint(4, 9)
+        else:
+            if op == "+":
+                a, b = random.randint(0, 50), random.randint(0, 49)
+            elif op == "-":
+                a = random.randint(0, 99)
+                b = random.randint(0, a)
+            else:
+                a, b = random.randint(0, 9), random.randint(0, 9)
+
+        ans = eval(f"{a}{op}{b}")
+        if 0 <= ans <= 99:
+            return a, op, b, ans
+
+def _choose_digit(label: str, top_line: str) -> int:
+    digit = 0
+    while True:
+        if alarm_state.should_cancel():
+            return -1
+
+        lcd_show(top_line, f"{label}: {digit}", force=True)
+        pressed = wait_for_button_press()
+
+        if pressed == "red":
+            digit = (digit + 1) % 10
+            GPIO.output(RED_LED, GPIO.HIGH)
+            time.sleep(0.12)
+            GPIO.output(RED_LED, GPIO.LOW)
+
+        elif pressed == "yellow":
+            digit = (digit - 1) % 10
+            GPIO.output(YELLOW_LED, GPIO.HIGH)
+            time.sleep(0.12)
+            GPIO.output(YELLOW_LED, GPIO.LOW)
+
+        elif pressed == "green":
+            GPIO.output(GREEN_LED, GPIO.HIGH)
+            time.sleep(0.2)
+            GPIO.output(GREEN_LED, GPIO.LOW)
+            return digit
+
+def run_math(hard=False):
+    a, op, b, answer = _generate_math_problem(hard)
+
+    while True:
+        if alarm_state.should_cancel():
+            return False
+
+        question = f"{a}{op}{b}=?"
+        lcd_show_temp("Solve this:", question, 1.4)
+
+        tens = _choose_digit("Tens", question)
+        if tens < 0:
+            return False
+
+        ones = _choose_digit("Ones", question)
+        if ones < 0:
+            return False
+
+        user_answer = tens * 10 + ones
+        lcd_show_temp("Your answer:", str(user_answer), 1.0)
+
+        if user_answer == answer:
+            lcd_show_temp("Math correct!", "Nice job", 1.6)
+            return True
+
+        lcd_show_temp("Incorrect", "Try again", 1.8)
+        flash_all_leds(times=2)
+        time.sleep(0.6)
+
+# ============================================================
+# LED CHALLENGE
+# ============================================================
+
+def run_led(length=5):
+    pattern = [random.choice(COLORS) for _ in range(length)]
+
+    while True:
+        if alarm_state.should_cancel():
+            return False
+
+        _show_pattern(pattern)
+        user = _get_user_pattern(length)
+
+        if user == pattern:
+            lcd_show_temp("Pattern correct", "", 1.6)
+            return True
+
+        lcd_show_temp("Wrong", "Retry", 1.8)
+        flash_all_leds(times=2)
+        time.sleep(0.6)
+
+# ============================================================
+# PUZZLE ENGINE
+# ============================================================
+
+def run_mode(mode: str):
+    steps = MODES.get(mode, ["math"])
+
+    for step in steps:
+        if alarm_state.should_cancel():
+            return False
+
+        if step == "math":
+            if not run_math(False):
+                return False
+
+        elif step == "math_hard":
+            if not run_math(True):
+                return False
+
+        elif step == "led":
+            length = 7 if mode == "puzzle" else 5
+            if not run_led(length):
+                return False
+
+    return True
+
+# ============================================================
+# ALARM RUNNER
+# ============================================================
+
+def run_alarm(alarm_time: str, mode: str):
+    print(f"[alarm] firing: {alarm_time} mode={mode}")
+    alarm_state.set_active(True)
+    _alarm_display_active.set()
+    start_audio(None)
+
+    try:
+        meta = MODE_META.get(mode, MODE_META["easy"])
+        lcd_show_temp("Alarm started", meta["label"][:16], 1.4)
+
+        if not run_mode(mode):
+            print("[alarm] cancelled during challenge")
+            return
+
+        lcd_show_temp("Done!", "Good morning", 2.0)
+        print("[alarm] challenge complete")
+
+    finally:
+        stop_audio()
+        all_leds_off()
+        alarm_state.set_active(False)
+        _alarm_display_active.clear()
+        lcd_clear_cache()
+
+# ============================================================
+# ALARM CHECKER LOOP
+# ============================================================
+
+def alarm_checker():
+    print("[alarm] checker started")
+
+    while True:
+        if not alarm_state.alarm_active:
+            alarms = load_alarms()
+            now_time = strftime("%H:%M")
+            now_stamp = strftime("%Y-%m-%d %H:%M")
+
+            for alarm in alarms:
+                t = alarm.get("time", "")
+                mode = alarm.get("mode", "easy")
+                if t == now_time and not alarm_state.already_triggered(now_stamp):
+                    alarm_state.mark_triggered(now_stamp)
+                    threading.Thread(
+                        target=run_alarm,
+                        args=(now_time, mode),
+                        daemon=True
+                    ).start()
+                    break
+
+        time.sleep(1)
+
+# ============================================================
+# FLASK APP
+# ============================================================
+
+app = Flask(
+    __name__,
+    template_folder="/home/kian/alarm_web/templates",
+    static_folder="/home/kian/alarm_web/static"
+)
+
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+@app.route("/api/alarms", methods=["GET"])
+def api_get_alarms():
+    return jsonify({"alarms": load_alarms()})
+
+@app.route("/api/alarms", methods=["POST"])
+def api_add_alarm():
+    data = request.get_json(silent=True) or {}
+    alarm_time = data.get("time", "").strip()
+    mode = data.get("mode", "easy")
+
+    if not _valid_time(alarm_time):
+        return jsonify({"success": False, "error": "Invalid time format. Use HH:MM"}), 400
+
+    if mode not in VALID_MODES:
+        mode = "easy"
+
+    alarms = load_alarms()
+    existing = next((a for a in alarms if a["time"] == alarm_time), None)
+
+    if existing:
+        existing["mode"] = mode
+    else:
+        alarms.append({"time": alarm_time, "mode": mode})
+
+    save_alarms(alarms)
+    return jsonify({"success": True, "alarms": load_alarms()})
+
+@app.route("/api/alarms/<alarm_time>", methods=["DELETE"])
+def api_delete_alarm(alarm_time):
+    alarms = [a for a in load_alarms() if a["time"] != alarm_time]
+    save_alarms(alarms)
+    return jsonify({"success": True, "alarms": load_alarms()})
+
+@app.route("/api/cancel", methods=["POST"])
+def api_cancel():
+    if alarm_state.alarm_active:
+        alarm_state.request_cancel()
+        return jsonify({"success": True, "message": "Cancel requested"})
+    return jsonify({"success": False, "message": "No alarm active"})
+
+@app.route("/api/status", methods=["GET"])
+def api_status():
+    with weather_lock:
+        temp = outside_temp_f
+
+    return jsonify({
+        "alarm_active": alarm_state.alarm_active,
+        "current_time": strftime("%H:%M"),
+        "temp_f": temp,
+        "date": strftime("%m/%d/%Y"),
+        "modes": MODE_META,
+    })
+
+@app.route("/api/weather", methods=["GET"])
+def api_get_weather():
+    with weather_lock:
+        temp = outside_temp_f
+    return jsonify({"temp_f": temp})
+
+# ============================================================
+# STARTUP
+# ============================================================
+
+def initialize_files():
+    if not os.path.exists(ALARMS_FILE):
+        with open(ALARMS_FILE, "w") as f:
+            json.dump([], f)
+
+    set_outside_temp(load_weather_temp())
+
+# ============================================================
+# ENTRY POINT
+# ============================================================
+
+def main():
+    initialize_files()
+
+    clock_thread = threading.Thread(target=clock_loop, daemon=True)
+    clock_thread.start()
+
+    flask_thread = threading.Thread(
+        target=lambda: app.run(
+            host=FLASK_HOST,
+            port=FLASK_PORT,
+            debug=False,
+            use_reloader=False,
+        ),
+        daemon=True,
+    )
+    flask_thread.start()
+
+    print(f"[main] Web UI: http://raspberrypi.local:{FLASK_PORT}")
+    print("[main] Alarm checker running. Ctrl+C to exit.")
+
+    try:
+        alarm_checker()
+    except KeyboardInterrupt:
+        print("\n[main] Shutting down...")
+    finally:
+        _stop_clock.set()
+        _stop_music.set()
+        stop_audio()
+        all_leds_off()
+        GPIO.output(BUZZER_PIN, GPIO.LOW)
+        with lcd_lock:
+            lcd.clear()
+        GPIO.cleanup()
+        print("[main] Clean exit.")
+
+if __name__ == "__main__":
+    main()
+
+
+
