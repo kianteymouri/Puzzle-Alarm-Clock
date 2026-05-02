@@ -1,7 +1,7 @@
 Hello!
 
 This project was made as a final for our ME100 class.
-Team members included me and Chun Lin.
+Team members included me, Chun Lin and Hussain Jafri.
 
 Alarm clocks today suck. It's too easy to hit snooze and if you have to setup a million to wake up you know its not working.
 The problem is that our brains cant stay awake as soon as were woken up from the alarm. To combat this we need something to exercise
