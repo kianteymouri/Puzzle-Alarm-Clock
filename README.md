@@ -20,9 +20,9 @@ letting the Raspi operate its normal programs.
 This Smart Puzzle alarm clock also comes with a webapp where users can add their alarm times and also upload music to be played upon 
 the ringing of the alarm. The webapp allows .mp3, .wav, and other audio files.
 
-The whole project cost under 40$ to make(assuming ownership of several components) and is relatively difficult to build.
+The whole project cost under 40$ to make(assuming ownership of several components) and is relatively easy to build.
 
-We designed and assembled the packaging, which is a 3D printed case and user some 2mm screws. 
+We designed and assembled the packaging, which is a 3D printed case and uses some 2mm screws. 
 
 
 
@@ -40,8 +40,12 @@ BOM below
 
 1x Buzzer/Speaker
 
+1x Ultrasonic Distance Sensor
+
 1x Buffer OpAmp
 
+
+Thinking about incorporating Backup Battey option which would include:
 1x 3.7V LiPo Battery
 
 1x Buck Boost Converter 5V 
