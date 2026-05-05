@@ -53,7 +53,7 @@ the ringing of the alarm. The webapp would allows .mp3, .wav, and other audio fi
 
 The whole project cost under 40$ to make(assuming ownership of several components) and is relatively easy to build.
 
-We designed and assembled the packaging, which is a 3D printed case and uses some 2mm screws. 
+We designed and assembled the packaging, which is a 3D printed case and uses some 2mm screws. Here is the MakerWorld link: 
 
 
 
@@ -80,5 +80,8 @@ Thinking about incorporating Backup Battey option which would include:
 1x 3.7V LiPo Battery
 
 1x Buck Boost Converter 5V 
+
+
+
 
 
