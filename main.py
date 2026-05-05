@@ -251,6 +251,7 @@ class AlarmState:
         self.triggered_stamps = set()
         self.alarm_active = False
         self.cancel_requested = False
+        self.auto_snooze_count = 0
 
     def mark_triggered(self, stamp: str):
         with self._lock:
@@ -699,28 +700,72 @@ def run_mode(mode: str):
 
 def run_alarm(alarm_time: str, mode: str):
     print(f"[alarm] firing: {alarm_time} mode={mode}")
-    alarm_state.set_active(True)
-    _alarm_display_active.set()
-    start_audio(None)
+    
+    # Reset snooze count for a brand new alarm trigger
+    alarm_state.auto_snooze_count = 0
+    
+    while alarm_state.auto_snooze_count < 3:
+        alarm_state.set_active(True)
+        _alarm_display_active.set()
+        start_audio(None)
+        
+        # Start the puzzle in a separate thread so we can monitor time here
+        puzzle_finished = threading.Event()
+        
+        def puzzle_thread():
+            if run_mode(mode):
+                puzzle_finished.set()
 
-    try:
-        meta = MODE_META.get(mode, MODE_META["easy"])
-        lcd_show_temp("Alarm started", meta["label"][:16], 1.4)
+        t = threading.Thread(target=puzzle_thread, daemon=True)
+        t.start()
 
-        if not run_mode(mode):
-            print("[alarm] cancelled during challenge")
-            return
+        # Monitor loop: Wait for puzzle completion OR 5-minute timeout
+        start_wait = time.time()
+        timeout_seconds = 300  # 5 minutes
+        success = False
 
-        lcd_show_temp("Done!", "Good morning", 2.0)
-        print("[alarm] challenge complete")
+        while time.time() - start_wait < timeout_seconds:
+            if puzzle_finished.is_set():
+                success = True
+                break
+            if alarm_state.should_cancel():
+                break
+            time.sleep(1)
 
-    finally:
+        # CLEANUP CURRENT ATTEMPT
         stop_audio()
         all_leds_off()
-        alarm_state.set_active(False)
-        _alarm_display_active.clear()
-        lcd_clear_cache()
+        
+        if success:
+            lcd_show_temp("Done!", "Good morning", 2.0)
+            alarm_state.set_active(False)
+            _alarm_display_active.clear()
+            return # Alarm fully cleared
 
+        if alarm_state.should_cancel():
+            print("[alarm] manually cancelled")
+            alarm_state.set_active(False)
+            _alarm_display_active.clear()
+            return
+
+        # IF WE REACHED HERE, IT TIMED OUT
+        alarm_state.auto_snooze_count += 1
+        print(f"[alarm] timed out. Attempt {alarm_state.auto_snooze_count}/3")
+        
+        if alarm_state.auto_snooze_count >= 3:
+            print("[alarm] Max attempts reached. Cancelling for good.")
+            lcd_show_temp("Alarm Expired", "Power Saving", 2.0)
+            break
+        else:
+            # Power save mode: Turn everything off and wait 5 minutes
+            _alarm_display_active.clear()
+            lcd_show_temp("Power Saving...", "Retry in 5m", 2.0)
+            time.sleep(300) # Wait 5 minutes before the next loop
+            
+    # Final cleanup
+    alarm_state.set_active(False)
+    _alarm_display_active.clear()
+    lcd_clear_cache()
 # ============================================================
 # ALARM CHECKER LOOP
 # ============================================================
