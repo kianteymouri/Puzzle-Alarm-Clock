@@ -1,5 +1,12 @@
 Hello!
 
+
+<img width="893" height="666" alt="Screenshot 2026-05-05 at 12 58 32 PM" src="https://github.com/user-attachments/assets/c2109cd2-1381-462a-8d05-5064a3edb161" />
+<img width="941" height="705" alt="Screenshot 2026-05-05 at 12 58 42 PM" src="https://github.com/user-attachments/assets/a67c9fae-f8cf-45e6-bcfe-d35493094206" />
+
+
+
+
 This project was made as a final for my ME100 class.
 
 Alarm clocks today suck. It's too easy to hit snooze and if you have to setup a million to wake up you know its not working.
